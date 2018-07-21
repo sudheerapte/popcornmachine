@@ -204,6 +204,7 @@ class Machine {
     } else if (str.startsWith('P')) {
       // for P command, we need to be in editing mode
       if (! this.isEditing()) { return `interpretOp ${str}\nP - not editing`; }
+      if (str === 'P') { return null; } // special case: root path
       m = str.match(Machine.PPAT);
       if (m) {
 	return this.addState(m[1]);

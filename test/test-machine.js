@@ -318,7 +318,8 @@ function checkSerialTransfer(orig) {
   let currentPaths = orig.getCurrentPaths();
   const serial = orig.getSerialization();
   const machine = new Machine();
-  machine.interpret(serial);
+  const res = machine.interpret(serial);
+  err(res);
   if (! machine.getAllPaths().every( (p, i) => p === allPaths[i] )) {
     err(`allPaths do not match after serialization!`);
     console.log(allPaths);
