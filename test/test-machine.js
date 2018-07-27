@@ -16,7 +16,7 @@
 
 "use strict";
 
-const Machine = require("../js/gen/machine-module.js");
+const Machine = require("./machine-bundle.js");
 let machine = new Machine();
 
 let log, err;
@@ -44,36 +44,12 @@ let list = [
   '.hcam',
 ];
 
-
-// We should already be in editing mode on creation
-
-if (! machine.isEditing()) {
-  err(`should already be in editing mode on creation`);
-}
-
-if (! machine.startEditing().match(/already editing/)) {
-  err(`should already be in editing mode on creation`);
-}
-
-// Error checking for editing mode
-
-machine.finishEditing();
-if (! machine.addStates(list).match(`not editing`)) {
-  err(`must be in editing mode to add states`);
-}
-
-// check 'newmachine' event can be listened to
-
-let gotNewMachineEvent = false;
-let newMachineListener = () => gotNewMachineEvent = true ;
-machine.addEventListener('newmachine', newMachineListener);
-
-machine.startEditing();
-if (machine.addStates(list) !== null) {
-  err(`must be able to add states in editing mode`);
-}
-machine.finishEditing(); // should generate newmachine event
-machine.removeEventListener('newmachine', newMachineListener);
+// --------------------------------------------------------------
+// Section 1:  Direct calls to _addState() - no events generated
+list.forEach( path => {
+  const result = machine._addState(path);
+  err(result);
+});
 
 // 1. count added paths, and check to make sure they all exist in the machine.
 //    verify that three of them are variable paths.
@@ -114,7 +90,40 @@ if (s.parent.name !== 'booting') {
   err(`bad parent for robot: ${JSON.stringify(s.parent)}`);
 }
 
-// 3. check getCurrent, then setCurrent, and verify that event is triggered
+// --------------------------------------------------------------
+// interpret()
+
+// interpret once
+machine = new Machine();
+let gotNewMachineEvent = false;
+function newMachineListener(block) {
+  gotNewMachineEvent = true;
+  // console.log(`got block with ${block.length} elements`);
+}
+
+machine.addBlockListener(newMachineListener);
+
+let block = list.map( state => `P ${state}` );
+err(machine.interpret(block));
+
+machine.removeBlockListener(newMachineListener);
+
+// interpret same block again: should be no-op
+let s1 = machine.getSerialization();
+err(machine.interpret(block));
+let s2 = machine.getSerialization();
+let results = s1.map( (s, i) => (s === s2[i]) );
+err(results.find( r => (!r) ));
+
+
+function equalArray(a1, a2) {
+  if (a1.length !== a2.length) { return false; }
+  const results = a1.map( (e, i) => e === a2[i] );
+  const unequal = results.find( r => r !== true );
+  return unequal === undefined;
+}
+
+// 3. check getCurrent, then setCurrent, and verify that event is not triggered
 
 const sPath = '.boot/booting.robot';
 if (! machine.exists(sPath + '/unknown')) {
@@ -122,13 +131,13 @@ if (! machine.exists(sPath + '/unknown')) {
 }
 
 let event3Triggered = false;
-machine.addEventListener('statechange', event3Listener);
+machine.addBlockListener(event3Listener);
 
-function event3Listener(path, name) {
+function event3Listener(arr) {
+  err("event3 should not be triggered when we call setCurrent directly!");
   event3Triggered = true;
-  if (name !== 'expectingjcbs') {
-    err(`${path}: expecting expectingjcbs; got ${name}`);
-  }
+  err(arr.length === 1);
+  err(arr[0].startsWith('C'));
 }
 
 machine.setCurrent(sPath, 'expectingjcbs');
@@ -136,7 +145,8 @@ if (! machine.exists(sPath + '/expectingjcbs')) {
   err(`${sPath}: failed to set current state to expectingjcbs`);
 }
 
-machine.removeEventListener('statechange', event3Listener);
+let r3m = machine.removeBlockListener(event3Listener);
+err(r3m);
 
 // 4. getCurrentPaths; verify that there are 8.
 
@@ -144,6 +154,7 @@ const currPaths = machine.getCurrentPaths();
 if (currPaths.length !== 8) {
   err(`expecting 8 currPaths; got ${currPaths.length}`);
 }
+
 
 // 5. Set data to a leaf state that is not a variable leaf.
 //    It should work, and it should also trigger a registered listener.
@@ -153,19 +164,17 @@ if (currPaths.length !== 8) {
 
 let event5Triggered = false;
 let should5Trigger = true;
-function fooListener(path, value) {
+function event5Listener(arr) {
   event5Triggered = true;
   if (should5Trigger === false) {
     err(`fooListener should not have been called!`);
   }
-  if (value !== 'foo') {
-    err(`${path}: expecting foo; got ${value}`);
-  }
+  err(arr.length === 1);
+  err(arr[0].startsWith("D"));
+  err(arr[0].endsWith("foo"));
 }
-let r5 = machine.addEventListener('datachange', fooListener);
-if (r5 !== null) {
-  err(`addEventListener returned ${r5}`);
-}
+let r5 = machine.addBlockListener(event5Listener);
+err(r5);
 
 [
   '.boot/booting.robot/unknown',
@@ -178,21 +187,21 @@ if (r5 !== null) {
     if (machine.getData(path) !== "") {
       err(`${path} getData() should have returned empty string!`);
     }
-    machine.setData(path, "foo");
+    err(machine.interpret([`D ${path} foo`]));
     if (machine.getData(path) !== "foo") {
       err(`${path} getData() should have returned foo!`);
     }
   }
 });
 
-r5 = machine.removeEventListener('datachange', fooListener);
+r5 = machine.removeBlockListener(event5Listener);
 if (r5 !== null) {
-  err(`removeEventListener returned ${r5}`);
+  err(`removeBlockListener returned ${r5}`);
 }
 should5Trigger = false;
-machine.setData(".wcam", "foo");
-if (machine.getData(".wcam") !== "foo") {
-  err(`${path} getData() should have returned foo!`);
+machine.setData(".wcam", "bar");
+if (machine.getData(".wcam") !== "bar") {
+  err(`${path} getData() should have returned bar!`);
 }
 
 // 6. empty out the tree; verify it is empty.
@@ -207,73 +216,34 @@ if (machine.exists(".boot")) {
 // 7. try adding paths with nonexistent parent sequences
 
 let r7;
-machine.startEditing();
-r7 = machine.addState('.a.b.c');
+r7 = machine.interpret(['P .a.b.c']);
 if (r7 !== null) {
   err(`addState .a.b.c should be null!`);
 }
 if (! machine.exists('.a.b')) {
   err(`path .a.b should exist!`);
 }
-r7 = machine.addState('.a.b.c.d');
+r7 = machine.interpret(['P .a.b.c.d']);
 if (r7 !== null) {
   err(`addState .a.b.c.d should be null!`);
 }
-r7 = machine.addState('.a.b.c/d');
+r7 = machine.interpret(['P .a.b.c/d']);
 if (r7 === null) {
-  err(`addState .a.b.c/d should have failed!`);
+  err(`_addState .a.b.c/d should have failed!`);
 }
 if (! r7.match(/concurrent parent/)) {
   err(`expecting to match /concurrent parent/; got: ${r7}`);
 }
-r7 = machine.addState('');
+r7 = machine.interpret(['P ']);
 if (r7 !== null) {
   err(`addState "": expecting success; got: ${r7}`);
 }
-r7 = machine.addState('foo');
+r7 = machine.interpret(['P foo']);
 if (r7 === null) {
   err(`addState "foo": expecting failure!`);
 } else if (! r7.match(/bad path/)) {
   err(`addState "foo": expecting bad path failure!`);
 }
-
-// test 8 - listeners should not be triggered when editing.
-//  listeners should be triggered after finishEditing.
-let r8;
-
-// r8DummyListener should never be called, because we are still editing
-r8 = machine.addEventListener('datachange', r8DummyListener);
-if (r8 !== null) {
-  err(`addEventListener returned ${r8}`);
-}
-
-function r8DummyListener(path, name) {
-  err(`r8DummyListener triggered! ${path} ${name}`);
-}
-
-let r8eventTriggered = false;
-
-function r8Listener(path, name) {
-  r8eventTriggered = true;
-}
-machine.addEventListener('statechange', r8Listener);
-
-r8 = machine.addState('.foo');
-r8 = machine.addState('.foo/a');
-r8 = machine.addState('.foo/b');
-
-r8 = machine.setCurrent('.foo', 'b');
-if (r8 !== null) {
-  err(`setCurrent b: expecting success!`);
-}
-
-r8 = machine.removeEventListener('datachange', r8DummyListener); 
-if (r8 !== null) {
-  err(`removeEventListener returned ${r8}`);
-}
-
-machine.finishEditing();
-r8 = machine.setCurrent('.foo', 'b'); // this should trigger r8Listener
 
 // interpretOp - toggle parents on and off; see effect on children
 let r9;
@@ -301,13 +271,58 @@ if (typeof machine.getData('.z') !== 'string' || (machine.getData('.z').length !
   err(`expecting data = ''! got |${machine.getData('.z')}|`);
 }
 
+// -------------------------------------------------------------------------
+// new Machine
+// -------------------------------------------------------------------------
+
+machine = new Machine();
+
+// empty the machine and recreate
+r9 = machine.interpret(['E', 'P .x/k.foo']); err(r9);
+r9 = machine.getSerialization();
+err(r9.length === 4);
+r9 = machine.interpret(['P .j/k.foo', 'E', 'P .j/k.foo']); err(r9);
+r9 = machine.getSerialization();
+err(r9.length === 4);
+
+// data append: foo, bar, empty line, baz
+r9 = machine.interpret(['P .j/k.foo', 'D .j/k.foo foo']); err(r9);
+r9 = machine.interpret(['A .j/k.foo bar']); err(r9);
+r9 = machine.interpret(['A .j/k.foo ', 'A .j/k.foo baz']);    err(r9);
+
+const dataValues = machine.getData('.j/k.foo');
+err(dataValues[0] === 'foo');
+err(dataValues[1] === 'bar');
+err(dataValues[2] === '');
+err(dataValues[3] === 'baz');
 
 // getSerialization - serialization must preserve paths
-
 checkSerialTransfer(machine);
-machine.interpretOp('C .j l');
+r9 = machine.interpret(['P .j/l', 'C .j l']); err(r9);
 checkSerialTransfer(machine);
 
+// data append to beyond limit of 100 lines
+for (let i=0; i<105; i++) {
+  r9 = machine.interpret([`A .j/k.foo data-${i}`]); err(r9);
+}
+const firstElem = machine.getData('.j/k.foo')[0];
+if (firstElem !== 'data-5') {
+  err(`firstElem should be |data-5|; got |${firstElem}|`);
+}
+checkSerialTransfer(machine);
+let sLength;
+sLength = machine.getSerialization().length;
+if (sLength !== 106) { err(`serialization should have been 106; got ${sLength}`); }
+
+// overwrite appended data with a single empty line
+r9 = machine.interpret(['D .j/k.foo']); err(r9);
+const emptyElem = machine.getData('.j/k.foo');
+if (emptyElem !== '') {
+  err(`getData should have been empty string; got |${emptyElem}|`);
+}
+checkSerialTransfer(machine);
+sLength = machine.getSerialization().length;
+if (sLength !== 6) { err(`serialization should have been 6; got ${sLength}`); }
 
 /**
    @function(checkSerialTransfer) - serialize, unserialize, check
@@ -342,19 +357,15 @@ function checkSerialTransfer(orig) {
   }
 }
 
-
 // --------------------------
 
 process.on('beforeExit', code => {
   if (code === 0) {
-    if (!event3Triggered) {
-      err(`event3 was never triggered!`);
+    if (event3Triggered) {
+      err(`event3 was triggered!`);
     }
     if (!event5Triggered) {
       err(`event5 was never triggered!`);
-    }
-    if (! r8eventTriggered) {
-      err(`r8event was never triggered!`);
     }
     if (! gotNewMachineEvent) {
       err('failed to get newmachine event on finishEditing()');

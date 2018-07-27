@@ -18,6 +18,14 @@
    This class represents one state machine tree. When you create an
    instance, it has only the root path "" and is in edit mode.
 
+   External API:
+
+   interpret(array)
+
+   Takes an array of commands called a "block" and executes them all
+   in sequence as a transaction. On error, it returns an error message.
+   On success it returns null.
+
    Internal representation:
 
    A parent state can be either:
@@ -56,77 +64,26 @@
 
  */
 
+const MAX_DATA_LENGTH = 100; /* data leaf value number of strings */
+
 class Machine {
 
   constructor() {
     this.STATE_TREE = new Map();
-    this.statechangeListeners = [];
-    this.datachangeListeners = [];
-    this.newmachineListeners = [];
+    this.listeners = [];
     // Special case: top-level state has no parent.
     this.STATE_TREE.set("", { name: ""} );
-    this._live = false; // no events will be emitted
   }
 
-  isLive() { return !! this._live }
-  isEditing() { return ! this._live }
-
   /**
-     Editing the tree -- without emitting any events.
-
-     Adding new states:
-        addState() and addStates()
-        Take an existing path and a new name, creating the new child
-        state.
-
      Removing all the states:
         makeEmpty()
         Removes all the states, leaving only the special root state.
-	Makes and keeps the machine in editing state (i.e., not live)
    */
 
   makeEmpty() {
     this.STATE_TREE = new Map();
     this.STATE_TREE.set("", { name: ""} );
-    this._live = false;
-  }
-
-  addState(path) {
-    if (this.isLive()) { return `addState: not editing!` }
-    path = this.normalizePath(path);
-    if (path === null) { return `addState: bad path`; }
-    return this._addState(path);
-  }
-
-  addStates(arr) {
-    if (this.isLive()) { return `addStates: not editing!` }
-    if (! arr.hasOwnProperty('length')) {
-      return `addStates: not an array`;
-    }
-    this._live = false;
-    arr.forEach( path => {
-      const result = this._addState(path);
-      if (result!== null) { return result; }
-    });
-    return null;
-  }
-
-  /**
-     @function(finishEditing)
-     Finish editing the tree.
-     calls all the newmachineListeners.
-   */
-  startEditing() {
-    if (! this._live) { return `startEditing: already editing`; }
-    this._live = false;
-    return null;
-  }
-
-  finishEditing() {
-    if (this._live) { return `finishEditing: not editing`; }
-    this._live = true;
-    this.newmachineListeners.forEach( func => func() );
-    return null;
   }
 
   /**
@@ -134,8 +91,6 @@ class Machine {
      @function(normalizePath)
      @function(exists) @arg(path)
   */
-
-  // pathPat() { return /[A-Za-z0-9.-\/]+/; }
 
   normalizePath(str) {  // return null if str is illegal
     if (! str) { return ""; }
@@ -198,27 +153,61 @@ class Machine {
       m = str.match(Machine.APAT);
       if (m) {
 	return this.appendData(m[1], m[2]);
-      } else {
-	return `interpretOp: ${str}\nA - syntax must be ${Machine.APAT}`;
+      } else { // Allow for empty string value
+        m = str.match(Machine.ANULLPAT);
+        if (m) {
+          return this.appendData(m[1], "");
+        } else {
+	  return `interpretOp: ${str}\nA - syntax must be ${Machine.APAT}`;
+        }
       }
     } else if (str.startsWith('P')) {
-      // for P command, we need to be in editing mode
-      if (! this.isEditing()) { return `interpretOp ${str}\nP - not editing`; }
       if (str === 'P') { return null; } // special case: root path
       m = str.match(Machine.PPAT);
       if (m) {
-	return this.addState(m[1]);
+        const path = this.normalizePath(m[1]);
+        if (path === null) { return `P: bad path: ${path}`; }
+	return this._addState(path);
       } else {
 	return `interpretOp: ${str}\nP - syntax must be ${Machine.PPAT}`;
       }
+    } else if (str.startsWith('E')) {
+      if (str !== 'E') { return `interpretOp: E command must be standalone`; }
+      this.makeEmpty();
+      return null;
     } else {
       return `interpretOp: ${str}\nbad command: ${str.slice(0,1)}`;
     }
   }
 
+  clone() {
+    let clone = new Machine();
+    const results = this.getSerialization().map( op => clone.interpretOp(op) );
+    if (results.find( r => r !== null)) {
+      return "internal error: unable to create clone!";
+    } else {
+      return clone;
+    }
+  }
+
   interpret(arr) {
-    let errors = arr.map( op => this.interpretOp(op) );
-    return errors.find( e => e !== null );
+    // First try the array on a clone. If it succeeds, interpret it and return null.
+    // TODO: make interpret function more efficient without cloning every time
+    let clone = this.clone();
+    if (typeof clone === 'string') {
+      return `interpret: ${clone}`;
+    }
+    let results = arr.map( op => clone.interpretOp(op) );
+    let errResult = results.find( e => e !== null );
+    if (errResult) {
+      return errResult;
+    }
+
+    arr.forEach( op => {
+      this.interpretOp(op)
+    });
+    this.listeners.forEach( func => func(arr) );
+    return null;
   }
 
   // @function(getAllPaths) - all paths in parent-first sequence
@@ -228,16 +217,6 @@ class Machine {
     let rootState = this.getState("");
     this._appendChildren("", rootState, arr);
     return arr;
-  }
-
-  getState(path) {
-    path = this.normalizePath(path);
-    if (path === null) { return null; }
-    if (this.STATE_TREE.has(path)) {
-      return this.STATE_TREE.get(path);
-    } else {
-      return null;
-    }
   }
 
   // @function(getCurrentPaths) - only current paths in parent-first sequence
@@ -267,27 +246,18 @@ class Machine {
 	serial.push(`C ${pair[0]} ${pair[1]}`);
       }
       // Create "D" line only if non-empty data
-      if (parent &&
-	  ! parent.hasOwnProperty("curr") &&
-	  state.data &&
-	  typeof state.data === 'string' &&
-	  state.data !== "") {
-	serial.push(`D ${path} ${state.data}`);
+      // Create "A" lines if data is an array
+      if (parent && ! parent.hasOwnProperty("curr") && state.data !== null) {
+        if (typeof state.data === 'string' && state.data !== "") {
+	  serial.push(`D ${path} ${state.data}`);
+        } else if (typeof state.data === 'object' && state.data.hasOwnProperty('length')) {
+          state.data.forEach( d => serial.push(`A ${path} ${d}`) );
+        }
       }
     });
     return serial;
   }
 
-  // _snipChild utility: convert x.y.z/foo -> [x.y.z, foo]
-  
-  _snipChild(path) { // returns array: [parent, child]
-    const pos = path.lastIndexOf("/");
-    if (pos === -1) { return null; }
-    const childName = path.slice(pos+1);
-    if (childName.includes(".")) { return null; }
-    return [ path.slice(0, pos), childName ];
-  }
-	
   // Various queries about paths
   
   isLeaf(path) {
@@ -320,35 +290,19 @@ class Machine {
     return state.cc[state.curr];
   }
 
-  addEventListener(ev, func) {
-    if (ev === 'statechange') {
-      this.statechangeListeners.push(func);
-    } else if (ev === 'datachange') {
-      this.datachangeListeners.push(func);
-    } else if (ev === 'newmachine') {
-      this.newmachineListeners.push(func);
-    } else {
-      return `addEventListener: ${ev}: not a recognized event`;
-    }
+  addBlockListener(func) {
+    this.listeners.push(func);
     return null;
   }
 
-  removeEventListener(ev, func) {
-    let listeners;
-    if (ev === 'statechange') {
-      listeners = this.statechangeListeners;
-    } else if (ev === 'datachange') {
-      listeners = this.datachangeListeners;
-    } else if (ev === 'newmachine') {
-      listeners = this.newmachineListeners;
-    } else {
-      return `removeEventListener: ${ev}: not a recognized event`;
-    }
-    const pos = listeners.findIndex(elem => elem === func);
+  removeBlockListener(func) {
+    const pos = this.listeners.findIndex(elem => elem === func);
     if (pos > -1) {
-      listeners.splice(pos, 1);
+      this.listeners.splice(pos, 1);
+      return null;
+    } else {
+      return "removeBlockListener: no such function";
     }
-    return null;
   }
 
   /**
@@ -369,9 +323,6 @@ class Machine {
         return `setCurrent: no such child state: ${name}`;
       } else {
         s.curr = i;
-	if (this._live) {
-          this.statechangeListeners.forEach( listener => listener(path, name) );
-	}
       }
     }
     return null;
@@ -393,19 +344,49 @@ class Machine {
     }
     const s = this.getState(path);
     s.data = value;
-    if (this._live) {
-      this.datachangeListeners.forEach( listener => listener(path, value) );
-    }
     return null;
   }
 
-  // TODO - add appendData() function and fix setData() to use same format
+  /*
+    @function(appendData) - append a line of data to a data leaf.
+    The usual result is that the data will be an array of strings,
+    with the last element equal to the argument value.
+    Return null iff OK, else return error string.
+
+    The "value" must be a single string without any newlines.
+    If there are any newlines, they will not be honored, i.e.,
+    we will not create separate lines.
+    The result will be an array with one more element than before,
+    but limited to MAX_DATA_LENGTH lines. If more elements are
+    appended, old elements will be shifted out and discarded.
+
+    Special case: if the current data value is "", then appendData
+    will replace the data with the new value.
+   */
+
+  appendData(path, value) {
+    if (typeof value !== 'string') { return "appendData: value must be string"; }
+    const d = this.getData(path);
+    if (d === null) { return "appendData: bad path"; }
+    if (typeof d === 'object' && d.hasOwnProperty('length')) {
+      d.push(value);
+      if (d.length > MAX_DATA_LENGTH) { d.shift(); }
+      return null;
+    }
+    const s = this.getState(path);
+    if (d === "") {
+      s.data = value;
+    } else {
+      s.data = [ d, value ];
+    }
+    return null;
+  }
 
   /**
      @function(getData) - get the data value for a non-variable leaf
      @arg(path) - path of non-variable leaf state
      @return(null) - iff not successful
-     @return(string) - if not set for any reason; reason is in string
+     @return(string) - the data value; could be string or array of strings
    */
 
   getData(path) {
@@ -420,8 +401,29 @@ class Machine {
   }
 
 
-  // ------------------ internal functions below this point -------------
+  // internal functions below this point
+  // ------------------------------------------------------------------
 
+  getState(path) {
+    path = this.normalizePath(path);
+    if (path === null) { return null; }
+    if (this.STATE_TREE.has(path)) {
+      return this.STATE_TREE.get(path);
+    } else {
+      return null;
+    }
+  }
+
+  // _snipChild utility: convert x.y.z/foo -> [x.y.z, foo]
+  
+  _snipChild(path) { // returns array: [parent, child]
+    const pos = path.lastIndexOf("/");
+    if (pos === -1) { return null; }
+    const childName = path.slice(pos+1);
+    if (childName.includes(".")) { return null; }
+    return [ path.slice(0, pos), childName ];
+  }
+	
   _appendCurrentChildren(path, state, arr) {
     if (! state.cc) { return; }
 
@@ -538,6 +540,7 @@ Machine.CPAT = /^C\s+([A-Za-z0-9.\/-]+)\s+([A-Za-z0-9-]+)/;
 Machine.DPAT = /^D\s+([A-Za-z0-9.\/-]+)\s+(.*)/;
 Machine.DNULLPAT = /^D\s+([A-Za-z0-9.\/-]+)\s*/;
 Machine.APAT = /^A\s+([A-Za-z0-9.\/-]+)\s+(.*)/;
+Machine.ANULLPAT = /^A\s+([A-Za-z0-9.\/-]+)\s*/;
 Machine.DCONTPAT = /^C\s(.*)/;
 
 let machine = new Machine();

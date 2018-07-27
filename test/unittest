@@ -5,5 +5,5 @@ cat \
     ../machine.js \
     > ./machine-bundle.js &&
     echo "module.exports = Machine;" >> ./machine-bundle.js &&
-    node ./machine-bundle.js &&
+    node ./test-machine.js &&
     rm ./machine-bundle.js
