@@ -16,7 +16,7 @@
 
 "use strict";
 
-const Machine = require("./machine-bundle.js");
+const Machine = require("../machine.js");
 let machine = new Machine();
 
 let log, err;

@@ -543,4 +543,5 @@ Machine.APAT = /^A\s+([A-Za-z0-9.\/-]+)\s+(.*)/;
 Machine.ANULLPAT = /^A\s+([A-Za-z0-9.\/-]+)\s*/;
 Machine.DCONTPAT = /^C\s(.*)/;
 
-let machine = new Machine();
+module.exports = Machine;
+
