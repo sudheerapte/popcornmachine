@@ -275,7 +275,8 @@ class Machine {
   }
 
   isDataLeaf(path) {
-    return (typeof this.getData(path)) === 'string';
+    const d = this.getData(path);
+    return d !== null;
   }
 
   isVariableParent(path) {

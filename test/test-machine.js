@@ -346,7 +346,12 @@ function checkSerialTransfer(orig) {
     console.log(machine.getCurrentPaths());
   }
   if (! machine.getAllPaths().filter(p => machine.isDataLeaf(p)).every( p => {
-    return machine.getData(p) === orig.getData(p);
+    const d = machine.getData(p);
+    if (typeof d === 'string') {
+      return d === orig.getData(p);
+    } else {
+      return true;
+    }
   })) {
     console.log(`data do not match after serialization!`);
     let paths = orig.getAllPaths().filter(p => orig.isDataLeaf(p));
