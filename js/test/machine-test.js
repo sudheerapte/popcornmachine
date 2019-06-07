@@ -19,8 +19,8 @@
 const Machine = require("../machine.js");
 let machine = new Machine();
 
-let log, err;
-[log, err] = require('./logerr.js');
+let log, err, errDiff;
+[log, err, errDiff] = require('./logerr.js');
 
 let list = [
   '.boot',

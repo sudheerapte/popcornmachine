@@ -23,4 +23,11 @@ function err(s) {
   }
 }
 
-module.exports = [ log, err ];
+function errDiff(actual, expected) {
+  if (actual !== expected) {
+    console.log(`Actual |${actual}|, expected |${expected}`);
+    process.exit(1);
+  }
+}
+
+module.exports = [ log, err, errDiff ];
